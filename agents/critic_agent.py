@@ -1,5 +1,4 @@
 from google.antigravity import Agent, LocalAgentConfig
-from state import CritiqueResult
 from tools.fact_checker import search_paper_text
 from typing import Optional
 
@@ -24,8 +23,7 @@ def get_critic_agent(model: Optional[str] = None) -> Agent:
             "- If the drafts are fully accurate and supported by the paper, set 'approved' to True.\n"
             "- You must format your response to match the requested CritiqueResult JSON schema exactly."
         ),
-        "tools": [search_paper_text],
-        "response_schema": CritiqueResult
+        "tools": [search_paper_text]
     }
     if model:
         config_args["model"] = model

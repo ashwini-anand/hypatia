@@ -1,5 +1,4 @@
 from google.antigravity import Agent, LocalAgentConfig
-from state import ConceptCardsList
 from typing import Optional
 
 def get_explainer_agent(model: Optional[str] = None) -> Agent:
@@ -17,8 +16,7 @@ def get_explainer_agent(model: Optional[str] = None) -> Agent:
             "- Target 3 to 7 complex concepts from the paper (e.g., specific algorithms, architectures, theorems).\n"
             "- Focus on making the explanation understandable to a high school student.\n"
             "- You must format your response to match the requested JSON schema (ConceptCardsList) exactly."
-        ),
-        "response_schema": ConceptCardsList
+        )
     }
     if model:
         config_args["model"] = model

@@ -1,5 +1,4 @@
 from google.antigravity import Agent, LocalAgentConfig
-from state import PaperFacts
 from typing import Optional
 
 def get_analyst_agent(model: Optional[str] = None) -> Agent:
@@ -16,8 +15,7 @@ def get_analyst_agent(model: Optional[str] = None) -> Agent:
             "- Carefully identify the novel contributions, key findings, baseline models, benchmarks/datasets, and methodology steps.\n"
             "- Ensure that every extracted fact is accurate and directly backed by the paper's text.\n"
             "- You must format your response to match the requested JSON schema exactly. Fill in every field."
-        ),
-        "response_schema": PaperFacts
+        )
     }
     if model:
         config_args["model"] = model

@@ -16,26 +16,18 @@ import pydantic
 
 async def log_agent_thoughts(response, agent_name: str, debug: bool, model: Optional[str] = None):
     """Utility to print thoughts stream when debug is enabled.
-    Uses a timeout-based iterator to prevent blocking indefinitely if the stream hangs.
     """
     if not debug:
         return
         
     print(f"\n🧠 [{agent_name} Thought Process]: ", end="", flush=True)
     try:
-        thoughts_iter = response.thoughts.__aiter__()
-        while True:
-            # Wait at most 2.0 seconds for the next thought chunk to prevent hanging
-            thought = await asyncio.wait_for(thoughts_iter.__anext__(), timeout=2.0)
+        async for thought in response.thoughts:
             print(thought, end="", flush=True)
-    except StopAsyncIteration:
-        pass
-    except asyncio.TimeoutError:
-        # Gracefully handle timeout if no thoughts are returned (e.g., structured JSON mode)
-        print(" (No thoughts or stream timeout) ", end="")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f" (Error streaming thoughts: {e})", end="")
     print("\n")
+
 
 async def parse_structured_output(response, model_class: Type[pydantic.BaseModel], agent_name: str) -> pydantic.BaseModel:
     """Safely extracts structured output. If the model does not support native schema restrictions
@@ -107,9 +99,12 @@ async def run_research_workflow(
         print(f"[*] Querying arXiv database for: '{state.user_query}'...")
         scout_agent = get_scout_agent(model)
         async with scout_agent:
-            scout_prompt = f"Search and list papers for this query: '{state.user_query}'"
+            schema_str = json.dumps(CandidatePapersList.model_json_schema(), indent=2)
+            scout_prompt = (
+                f"Search and list papers for this query: '{state.user_query}'.\n"
+                f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}"
+            )
             response = await scout_agent.chat(scout_prompt)
-            await log_agent_thoughts(response, "Scout Agent", debug, model)
             
             candidates_data = await parse_structured_output(response, CandidatePapersList, "Scout Agent")
             
@@ -169,13 +164,23 @@ async def run_research_workflow(
     text_slice = extracted_text[:40000] if lite else extracted_text
     
     print("[*] Analyzing paper content and extracting core facts...")
+    print("    [DEBUG] Creating Analyst Agent instance...")
     analyst_agent = get_analyst_agent(model)
+    print("    [DEBUG] Entering async with context manager...")
     async with analyst_agent:
-        analyst_prompt = f"Analyze the following paper content and extract key scientific facts:\n\n{text_slice}"
+        print("    [DEBUG] Constructing prompt and schema...")
+        schema_str = json.dumps(PaperFacts.model_json_schema(), indent=2)
+        analyst_prompt = (
+            f"Analyze the following paper content and extract key scientific facts.\n"
+            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}\n\n"
+            f"Paper Content:\n{text_slice}"
+        )
+        print("    [DEBUG] Calling analyst_agent.chat(analyst_prompt)...")
         response = await analyst_agent.chat(analyst_prompt)
-        await log_agent_thoughts(response, "Analyst Agent", debug, model)
+        print("    [DEBUG] Chat call completed. Parsing structured output...")
         
         facts = await parse_structured_output(response, PaperFacts, "Analyst Agent")
+        print("    [DEBUG] parse_structured_output completed successfully.")
         state.extracted_facts = facts
         
         novel_count = len(facts.novel_contributions) if facts.novel_contributions else 0
@@ -192,9 +197,13 @@ async def run_research_workflow(
     print("[*] Generating beginner-friendly concept card explanations...")
     explainer_agent = get_explainer_agent(model)
     async with explainer_agent:
-        explainer_prompt = f"Scan the paper text and explain 3 to 5 key complex terms or math constructs:\n\n{text_slice}"
+        schema_str = json.dumps(ConceptCardsList.model_json_schema(), indent=2)
+        explainer_prompt = (
+            f"Scan the paper text and explain 3 to 5 key complex terms or math constructs.\n"
+            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}\n\n"
+            f"Paper Content:\n{text_slice}"
+        )
         response = await explainer_agent.chat(explainer_prompt)
-        await log_agent_thoughts(response, "Explainer Agent", debug, model)
         
         cards_list = await parse_structured_output(response, ConceptCardsList, "Explainer Agent")
         state.concept_cards = cards_list.cards if cards_list.cards else []
@@ -256,10 +265,13 @@ async def run_research_workflow(
             
             # C. Critique
             print("    [->] Double-checking drafts for accuracy (Critic)...")
+            schema_str = json.dumps(CritiqueResult.model_json_schema(), indent=2)
+            schema_inst = f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}\n\n"
             if lite:
                 critic_prompt = (
                     f"Review the draft summary and deep-dive for accuracy. Compare them directly with the paper text below (truncated to fit context).\n"
                     f"Use your 'search_paper_text' tool only if you need to look up facts not found in the text below.\n\n"
+                    f"{schema_inst}"
                     f"--- ORIGINAL PAPER TEXT (TRUNCATED) ---\n{text_slice}\n\n"
                     f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
                     f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
@@ -267,13 +279,13 @@ async def run_research_workflow(
             else:
                 critic_prompt = (
                     f"Review the draft summary and deep-dive for accuracy. Compare it directly with the original paper text below.\n\n"
+                    f"{schema_inst}"
                     f"--- ORIGINAL PAPER TEXT ---\n{extracted_text}\n\n"
                     f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
                     f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
                 )
                 
             critic_response = await critic_agent.chat(critic_prompt)
-            await log_agent_thoughts(critic_response, "Critic Agent", debug, model)
             
             critique = await parse_structured_output(response=critic_response, model_class=CritiqueResult, agent_name="Critic Agent")
             state.critic_critique = critique

@@ -1,6 +1,5 @@
 from google.antigravity import Agent, LocalAgentConfig
 from tools.search import search_arxiv
-from state import CandidatePapersList
 from typing import Optional
 
 def get_scout_agent(model: Optional[str] = None) -> Agent:
@@ -18,8 +17,7 @@ def get_scout_agent(model: Optional[str] = None) -> Agent:
             "- Always call the 'search_arxiv' tool with a clear search query derived from the user's prompt.\n"
             "- You must format your final output to match the requested CandidatePapersList JSON schema exactly."
         ),
-        "tools": [search_arxiv],
-        "response_schema": CandidatePapersList
+        "tools": [search_arxiv]
     }
     if model:
         config_args["model"] = model
