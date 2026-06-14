@@ -1,0 +1,6 @@
+google-antigravity
+pydantic
+pymupdf
+arxiv
+python-dotenv
+httpx

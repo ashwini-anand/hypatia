@@ -1,0 +1,298 @@
+import asyncio
+import os
+import json
+import re
+from state import ResearchState, CandidatePaper, CandidatePapersList, PaperFacts, ConceptCardsList, CritiqueResult, ConceptCard
+from tools.parser import download_and_parse_pdf
+from tools.fact_checker import set_active_paper_text
+from agents.scout_agent import get_scout_agent
+from agents.analyst_agent import get_analyst_agent
+from agents.explainer_agent import get_explainer_agent
+from agents.summarizer_agent import get_summarizer_agent
+from agents.deep_dive_agent import get_deep_dive_agent
+from agents.critic_agent import get_critic_agent
+from typing import Optional, Type
+import pydantic
+
+async def log_agent_thoughts(response, agent_name: str, debug: bool, model: Optional[str] = None):
+    """Utility to print thoughts stream in real-time when debug is enabled.
+    """
+    if not debug:
+        return
+        
+    print(f"\n🧠 [{agent_name} Thought Process]: ", end="", flush=True)
+    try:
+        async for thought in response.thoughts:
+            print(thought, end="", flush=True)
+    except Exception as e:
+        # Fallback if thoughts cannot be retrieved
+        pass
+    print("\n")
+
+async def parse_structured_output(response, model_class: Type[pydantic.BaseModel], agent_name: str) -> pydantic.BaseModel:
+    """Safely extracts structured output. If the model does not support native schema restrictions
+    (e.g., Gemma), extracts JSON from raw text using regex.
+    """
+    try:
+        # 1. Attempt native SDK structured extraction
+        structured_data = await response.structured_output()
+        if structured_data is not None:
+            return model_class(**structured_data)
+    except Exception as e:
+        # Fallback to text parsing
+        pass
+
+    # 2. Text Parsing Fallback
+    raw_text = await response.text()
+    
+    # Locate JSON block inside markdown formatting if present
+    json_match = re.search(r"```json\s*(.*?)\s*```", raw_text, re.DOTALL)
+    json_str = json_match.group(1) if json_match else raw_text
+    
+    try:
+        parsed_dict = json.loads(json_str.strip())
+        return model_class(**parsed_dict)
+    except Exception as e:
+        print(f"[!] Warning: Failed to parse structured output for {agent_name}. Error: {e}")
+        return model_class.model_construct()
+
+async def run_research_workflow(
+    state: ResearchState, 
+    debug: bool = False, 
+    lite: bool = False, 
+    model: Optional[str] = None
+) -> ResearchState:
+    """Orchestrates the research and drafting pipeline using specialized agents.
+    
+    Args:
+        state: The current ResearchState.
+        debug: If True, prints additional logs and streams agent thoughts.
+        lite: If True, runs in token-saving mode (truncates paper text and uses RAG for the Critic).
+              If False (Default), runs in Full Context Mode (passes full paper text for analysis).
+        model: Optional model override string (e.g. 'gemini-3.5-pro').
+    """
+    model_name = model or "gemini-3.5-flash"
+    
+    print("\n==================================================")
+    print("🚀 Starting Hypatia Scientific Research Workflow")
+    if lite:
+        print("[⚡] Mode: Lite (Low Token / Rate-Limit Safe)")
+    else:
+        print("[📄] Mode: Full Context (Full Document Analysis)")
+    print(f"[🤖] Model: {model_name}")
+    print("==================================================")
+
+    # Context Check for Gemma: Warn the user if they try to run a Gemma model in Full Context Mode
+    if "gemma" in model_name.lower() and not lite:
+        print("\n⚠️  [Senior Engineer Warning]")
+        print("Gemma models (like gemma-4-26b-a4b-it) have smaller context windows (typically 8K tokens)")
+        print("compared to Gemini models (1M+ tokens). Running in Full Context Mode (passing the entire paper)")
+        print("is highly likely to exceed Gemma's context window limit and cause it to hang or fail.")
+        print("-> It is strongly recommended to run Gemma models in '--lite' mode.")
+        print("Continuing in 5 seconds...")
+        await asyncio.sleep(5)
+
+    # --------------------------------------------------
+    # Step 1: Scout / Searcher Phase
+    # --------------------------------------------------
+    if not state.paper_url:
+        print(f"[*] Querying arXiv database for: '{state.user_query}'...")
+        scout_agent = get_scout_agent(model)
+        async with scout_agent:
+            scout_prompt = f"Search and list papers for this query: '{state.user_query}'"
+            response = await scout_agent.chat(scout_prompt)
+            await log_agent_thoughts(response, "Scout Agent", debug, model)
+            
+            candidates_data = await parse_structured_output(response, CandidatePapersList, "Scout Agent")
+            
+            if not candidates_data or not candidates_data.candidates:
+                raise ValueError(f"No research papers found for the query: '{state.user_query}'")
+            
+            state.candidates = candidates_data.candidates
+            # Select the top candidate automatically
+            state.selected_paper = state.candidates[0]
+            state.paper_url = state.selected_paper.url
+            print(f"[+] Found paper candidate: '{state.selected_paper.title}'")
+            print(f"[+] Download link: {state.paper_url}")
+            
+        if lite:
+            print("[*] Cooling down for 12 seconds to respect API rate limits...")
+            await asyncio.sleep(12)
+    else:
+        print(f"[*] Direct paper URL provided: {state.paper_url}")
+
+    # --------------------------------------------------
+    # Step 2: Download and Parse PDF Text
+    # --------------------------------------------------
+    print("[*] Retrieving and extracting text from PDF...")
+    if "arxiv.org/abs/" in state.paper_url:
+        state.paper_url = state.paper_url.replace("arxiv.org/abs/", "arxiv.org/pdf/") + ".pdf"
+        
+    if not state.selected_paper:
+        url_path = state.paper_url.split("?")[0]
+        filename = os.path.basename(url_path)
+        if filename.endswith(".pdf"):
+            filename = filename[:-4]
+        if not filename:
+            filename = "paper"
+            
+        state.selected_paper = CandidatePaper(
+            title=filename,
+            url=state.paper_url,
+            authors=[],
+            published="",
+            abstract=""
+        )
+
+    folder_name = state.selected_paper.get_folder_name()
+    paper_dir = os.path.join("output", folder_name)
+    os.makedirs(paper_dir, exist_ok=True)
+    
+    raw_text_path = os.path.join(paper_dir, "raw_text.txt")
+    extracted_text = download_and_parse_pdf(state.paper_url, save_text_path=raw_text_path)
+    state.extracted_text = extracted_text
+    
+    # Store text in global tool state for Critic fact-checking fallback
+    set_active_paper_text(extracted_text)
+
+    # --------------------------------------------------
+    # Step 3: Detail Extraction (Analyst Agent)
+    # --------------------------------------------------
+    text_slice = extracted_text[:40000] if lite else extracted_text
+    
+    print("[*] Analyzing paper content and extracting core facts...")
+    analyst_agent = get_analyst_agent(model)
+    async with analyst_agent:
+        analyst_prompt = f"Analyze the following paper content and extract key scientific facts:\n\n{text_slice}"
+        response = await analyst_agent.chat(analyst_prompt)
+        await log_agent_thoughts(response, "Analyst Agent", debug, model)
+        
+        facts = await parse_structured_output(response, PaperFacts, "Analyst Agent")
+        state.extracted_facts = facts
+        
+        novel_count = len(facts.novel_contributions) if facts.novel_contributions else 0
+        methodology_count = len(facts.methodology_steps) if facts.methodology_steps else 0
+        print(f"[+] Extracted {novel_count} novel contributions and {methodology_count} methodology steps.")
+
+    if lite:
+        print("[*] Cooling down for 12 seconds to respect API rate limits...")
+        await asyncio.sleep(12)
+
+    # --------------------------------------------------
+    # Step 4: Technical Glossary (Concept Explainer Agent)
+    # --------------------------------------------------
+    print("[*] Generating beginner-friendly concept card explanations...")
+    explainer_agent = get_explainer_agent(model)
+    async with explainer_agent:
+        explainer_prompt = f"Scan the paper text and explain 3 to 5 key complex terms or math constructs:\n\n{text_slice}"
+        response = await explainer_agent.chat(explainer_prompt)
+        await log_agent_thoughts(response, "Explainer Agent", debug, model)
+        
+        cards_list = await parse_structured_output(response, ConceptCardsList, "Explainer Agent")
+        state.concept_cards = cards_list.cards if cards_list.cards else []
+        print(f"[+] Generated {len(state.concept_cards)} concept explanation cards.")
+
+    if lite:
+        print("[*] Cooling down for 12 seconds to respect API rate limits...")
+        await asyncio.sleep(12)
+
+    # --------------------------------------------------
+    # Step 5: Draft & Critique Loop
+    # --------------------------------------------------
+    print("\n--------------------------------------------------")
+    print("✍️  Starting Drafting & Critique Revision Loop")
+    print("--------------------------------------------------")
+    
+    summarizer_agent = get_summarizer_agent(model)
+    deep_dive_agent = get_deep_dive_agent(model)
+    critic_agent = get_critic_agent(model)
+    
+    feedback_context = "This is the initial draft. No feedback yet."
+    max_iterations = 3
+    
+    async with summarizer_agent, deep_dive_agent, critic_agent:
+        while state.iteration_count < max_iterations:
+            state.iteration_count += 1
+            print(f"\n[*] Iteration {state.iteration_count}/{max_iterations}:")
+            
+            # A. Draft Summary
+            print("    [->] Drafting high-level summary (Summarizer)...")
+            facts_json = state.extracted_facts.model_dump_json() if state.extracted_facts else "{}"
+            sum_prompt = (
+                f"Write a clear summary of the paper. Use these extracted facts:\n{facts_json}\n\n"
+                f"Context and critic feedback: {feedback_context}"
+            )
+            sum_response = await summarizer_agent.chat(sum_prompt)
+            await log_agent_thoughts(sum_response, "Summarizer Agent", debug, model)
+            state.summary_draft = await sum_response.text()
+            
+            if lite:
+                print("    [*] Cooling down for 12 seconds to respect API rate limits...")
+                await asyncio.sleep(12)
+            
+            # B. Draft Deep Dive
+            print("    [->] Drafting technical deep dive (Deep-Dive Writer)...")
+            cards_str = "\n".join([f"- {c.concept}: {c.explanation} (Analogy: {c.analogy})" for c in state.concept_cards])
+            dive_prompt = (
+                f"Write an educational deep-dive of the paper. Use these facts:\n{facts_json}\n\n"
+                f"Explain these prerequisite concepts inside your explanation:\n{cards_str}\n\n"
+                f"Context and critic feedback: {feedback_context}"
+            )
+            dive_response = await deep_dive_agent.chat(dive_prompt)
+            await log_agent_thoughts(dive_response, "Deep-Dive Agent", debug, model)
+            state.deep_dive_draft = await dive_response.text()
+            
+            if lite:
+                print("    [*] Cooling down for 12 seconds to respect API rate limits...")
+                await asyncio.sleep(12)
+            
+            # C. Critique
+            print("    [->] Double-checking drafts for accuracy (Critic)...")
+            if lite:
+                critic_prompt = (
+                    f"Review the draft summary and deep-dive for accuracy. Compare them directly with the paper text below (truncated to fit context).\n"
+                    f"Use your 'search_paper_text' tool only if you need to look up facts not found in the text below.\n\n"
+                    f"--- ORIGINAL PAPER TEXT (TRUNCATED) ---\n{text_slice}\n\n"
+                    f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
+                    f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
+                )
+            else:
+                critic_prompt = (
+                    f"Review the draft summary and deep-dive for accuracy. Compare it directly with the original paper text below.\n\n"
+                    f"--- ORIGINAL PAPER TEXT ---\n{extracted_text}\n\n"
+                    f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
+                    f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
+                )
+                
+            critic_response = await critic_agent.chat(critic_prompt)
+            await log_agent_thoughts(critic_response, "Critic Agent", debug, model)
+            
+            critique = await parse_structured_output(response=critic_response, model_class=CritiqueResult, agent_name="Critic Agent")
+            state.critic_critique = critique
+            
+            is_approved = critique.approved if critique.approved is not None else True
+            
+            if is_approved:
+                print("    [+] Critic Approved the drafts! No hallucinations found.")
+                break
+            else:
+                hallucinations = critique.hallucinations_found if critique.hallucinations_found else []
+                corrections = critique.corrections_required if critique.corrections_required else "Fix errors."
+                
+                print("    [!] Critic Rejected the drafts.")
+                print(f"    [!] Hallucinations found: {hallucinations}")
+                print(f"    [!] Required corrections: {corrections}")
+                feedback_context = (
+                    f"Draft was REJECTED. Please correct the following issues:\n"
+                    f"Hallucinations detected: {hallucinations}\n"
+                    f"Feedback: {corrections}"
+                )
+                
+                if lite:
+                    print("    [*] Cooling down for 12 seconds to respect API rate limits...")
+                    await asyncio.sleep(12)
+
+    print("\n==================================================")
+    print("🎉 Hypatia Workflow Completed Successfully!")
+    print("==================================================")
+    return state
