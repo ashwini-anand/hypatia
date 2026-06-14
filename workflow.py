@@ -15,17 +15,25 @@ from typing import Optional, Type
 import pydantic
 
 async def log_agent_thoughts(response, agent_name: str, debug: bool, model: Optional[str] = None):
-    """Utility to print thoughts stream in real-time when debug is enabled.
+    """Utility to print thoughts stream when debug is enabled.
+    Uses a timeout-based iterator to prevent blocking indefinitely if the stream hangs.
     """
     if not debug:
         return
         
     print(f"\n🧠 [{agent_name} Thought Process]: ", end="", flush=True)
     try:
-        async for thought in response.thoughts:
+        thoughts_iter = response.thoughts.__aiter__()
+        while True:
+            # Wait at most 2.0 seconds for the next thought chunk to prevent hanging
+            thought = await asyncio.wait_for(thoughts_iter.__anext__(), timeout=2.0)
             print(thought, end="", flush=True)
-    except Exception as e:
-        # Fallback if thoughts cannot be retrieved
+    except StopAsyncIteration:
+        pass
+    except asyncio.TimeoutError:
+        # Gracefully handle timeout if no thoughts are returned (e.g., structured JSON mode)
+        print(" (No thoughts or stream timeout) ", end="")
+    except Exception:
         pass
     print("\n")
 

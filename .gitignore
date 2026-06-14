@@ -219,3 +219,8 @@ __marimo__/
 
 # Hypatia Generated Outputs
 output/
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
