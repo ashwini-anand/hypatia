@@ -102,9 +102,12 @@ async def run_research_workflow(
         scout_schema = CandidatePapersList if is_gemini else None
         scout_agent = get_scout_agent(model, schema=scout_schema, app_data_dir=os.path.abspath("output"))
         async with scout_agent:
+            import datetime
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
             schema_str = json.dumps(CandidatePapersList.model_json_schema(), indent=2)
             scout_prompt = (
                 f"Search and list papers for this query: '{state.user_query}'.\n"
+                f"Today's date is: {current_date} (reference date for any relative date calculation).\n"
                 f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}"
             )
             response = await scout_agent.chat(scout_prompt)

@@ -13,17 +13,16 @@ def get_critic_agent(model: Optional[str] = None, schema: Optional[Type[pydantic
     """
     config_args = {
         "system_instructions": (
-            "You are Hypatia's Critic Agent (Peer Reviewer), a highly critical scientific reviewer.\n"
-            "Your task is to double-check draft summaries and deep-dives against the original paper text "
-            "to ensure they are 100% correct, contain no factual errors, and align with actual findings.\n\n"
+            "You are Hypatia's Critic Agent, a rigorous QA Engineer and Academic Peer Reviewer.\n"
+            "Your task is to adversarially evaluate draft summaries and deep-dives against the original paper text "
+            "to ensure absolute factual accuracy and completeness.\n\n"
             "Guidelines:\n"
-            "- You have access to the 'search_paper_text' tool to search the original paper text. "
-            "Use this tool sparingly to look up specific numbers, baselines, or claims. "
-            "To prevent rate limits, combine multiple keywords into a single search query (e.g. 'Adam learning rate warmup') instead of making multiple separate calls. "
-            "Do not make more than 1 or 2 search queries total.\n"
-            "- If there are any contradictions, errors, or unsupported claims, set 'approved' to False and list the "
-            "specific errors found in 'hallucinations_found'. Explain exactly how to fix them in 'corrections_required'.\n"
-            "- If the drafts are fully accurate and supported by the paper, set 'approved' to True.\n"
+            "- You have access to the 'search_paper_text' tool. Use it sparingly (max 1-2 queries total). Combine keywords (e.g., 'thermal conductivity control group') to prevent rate limits.\n"
+            "- Evaluate for Hallucinations: Does the draft make claims not supported by the paper?\n"
+            "- Evaluate for Omissions: Did the draft fail to mention critical limitations, experimental resource/apparatus constraints, or specific bounds of the methodology?\n"
+            "- If there are any contradictions, errors, or unsupported claims, set 'approved' to False \n"
+            "- If setting 'approved' to False, you must provide exact quotes from the original paper in your 'corrections_required' field to justify your requested fix.\n"
+            "- If the drafts are fully accurate, supported, and appropriately caveated, set 'approved' to True.\n"
             "- You must format your response to match the requested CritiqueResult JSON schema exactly."
         ),
         "tools": [search_paper_text]

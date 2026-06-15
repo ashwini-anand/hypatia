@@ -10,49 +10,53 @@ Hypatia is a Python-based multi-agent application designed to search, parse, sum
 
 ## 1. System Architecture
 
-Hypatia is structured around a **Coordinator-Specialist (Orchestrator-Workers)** multi-agent topology. Rather than relying on a single prompt to parse, write, and verify, Hypatia orchestrates a team of 8 agents to verify factual consistency and readability.
+Hypatia is structured around a **Coordinator-Specialist (Orchestrator-Workers)** multi-agent topology. Rather than relying on a single prompt to parse, write, and verify, Hypatia coordinates a team of **6 specialized worker agents** and dedicated processing tools, using a Python-based asynchronous workflow engine to verify factual consistency and readability.
 
 ```mermaid
 graph TD
-    User([User Request]) --> Hypatia[Hypatia: Orchestrator Agent]
-    Hypatia -->|Route request| Route{Link or Query?}
+    User([User Request]) --> Engine[Workflow Orchestrator Engine]
+    Engine -->|Route request| Route{Link or Query?}
     
     Route -->|Query| Searcher[Searcher Agent]
     Searcher -->|arXiv API| Searcher
-    Searcher -->|URL & Metadata| Hypatia
+    Searcher -->|URL & Metadata| Engine
     
-    Route -->|URL| Parser[Reader/Parser Agent]
-    Hypatia -->|URL| Parser
+    Route -->|URL| Parser[PDF Parser Tool]
+    Engine -->|URL| Parser
     Parser -->|PyMuPDF| Parser
-    Parser -->|Raw Text| Hypatia
+    Parser -->|Raw Text| Engine
     
-    Hypatia --> Analyst[Analyst Agent]
-    Analyst -->|JSON facts| Hypatia
+    Engine --> Analyst[Analyst Agent]
+    Analyst -->|JSON facts| Engine
     
-    Hypatia --> Summarizer[Summarizer Agent]
-    Hypatia --> DeepDive[Deep-Dive Agent]
-    Hypatia --> Explainer[Concept Explainer Agent]
+    Engine --> Summarizer[Summarizer Agent]
+    Engine --> DeepDive[Deep-Dive Agent]
+    Engine --> Explainer[Concept Explainer Agent]
     
     Summarizer -->|Summary Draft| Critic[Critic Agent]
     DeepDive -->|Deep Dive Draft| Critic
     Explainer -->|Glossaries| Critic
     
-    Critic -->|check_facts tool| PaperText[(Raw Paper Text)]
-    Critic -->|Critique JSON| Hypatia
+    Critic -->|search_paper_text tool| PaperText[(Raw Paper Text)]
+    Critic -->|Critique JSON| Engine
     
-    Hypatia -->|Loop if rejected| Summarizer
-    Hypatia -->|Deliver final MD & PDF| User
+    Engine -->|Loop if rejected| Summarizer
+    Engine -->|Deliver final MD & HTML| User
 ```
 
-### The 8 Specialized Agents
-1.  **Hypatia (Orchestrator):** The supervisor agent. Coordinates inputs, manages state variables, spawns specialized agents, and compiles output artifacts.
-2.  **Searcher:** Uses the arXiv API to translate natural language queries (e.g., topics or dates) into academic papers, providing metadata and PDF links.
-3.  **Reader/Parser:** Downloads the PDF and extracts raw page text cleanly using PyMuPDF.
-4.  **Analyst:** Operates on the extracted paper text to mine core structural facts (novelty, baselines, key metrics, methodology steps) into structured JSON.
-5.  **Concept Explainer:** Extracts technical terms and generates explanations with real-world analogies.
-6.  **Summarizer:** Drafts a summary (Artifact 1) outlining the paper's key goals, methodology, and findings.
-7.  **Deep-Dive Writer:** Drafts a technical document (Artifact 2) explaining equations, architectures, and experimental configurations.
-8.  **Critic (Peer Reviewer):** Fact-checks drafts against the original paper text using local RAG keyword searches. Rejects drafts containing factual inconsistencies or errors, passing detailed correction feedback to the writing agents.
+### System Components
+
+#### Orchestration & Parsing Tools
+1.  **Workflow Orchestrator Engine (Python Code)**: The central asynchronous coordinator (`workflow.py`). It manages execution states, runs independent agents in parallel streams using `asyncio.gather`, and implements the critique-and-revision feedback loops.
+2.  **PDF Parser Tool**: A python module (`tools/parser.py`) that downloads research PDFs and extracts raw page text cleanly using PyMuPDF.
+
+#### The 6 Specialized Worker Agents
+1.  **Searcher (Scout Agent)**: Uses the arXiv API to translate natural language queries into academic paper candidate links, abstracts, and metadata.
+2.  **Analyst (Analyst Agent)**: Parses raw paper text to extract core, atomic facts (novelty, comparative standards, key metrics, methodology steps) into structured JSON.
+3.  **Concept Explainer (Explainer Agent)**: Extracts complex scientific terms and creates plain-English definitions, analogies, and limitations for each.
+4.  **Summarizer (Summarizer Agent)**: Synthesizes paper details into a highly scannable, direct, and structured high-level summary (Artifact 1).
+5.  **Deep-Dive Writer (Deep-Dive Agent)**: Drafts a comprehensive technical document (Artifact 2) explaining equations, core mechanisms, experimental configurations, and implementation realities.
+6.  **Critic (Peer Reviewer)**: Fact-checks drafts against the original paper text using local RAG keyword searches. Rejects drafts containing factual inconsistencies or omissions, passing detailed correction feedback to the writing agents.
 
 ---
 
@@ -124,19 +128,30 @@ To stream the internal reasoning steps (thoughts) of all agents in real-time to 
 .venv/bin/python main.py --lite --debug
 ```
 
+### Example Inputs
+
+When prompted by the CLI, you can load a paper using either a query or a direct URL:
+
+*   **Option 1: Search Query**
+    *   `distributed database consistency`
+    *   `CRISPR gene editing mechanisms`
+*   **Option 2: Direct URL**
+    *   `https://arxiv.org/pdf/1901.01930` (direct PDF link)
+    *   `https://arxiv.org/abs/1901.01930` (abstract landing page URL)
+
 ---
 
 ## 4. System Outputs
 
-Once execution completes, Hypatia compiles both markdown drafts and styled PDF documents into the `output/` directory:
+Once execution completes, Hypatia compiles both markdown drafts and styled HTML documents into the `output/` directory:
 
 ```text
 output/<paper_name>/
 ├── raw_text.txt       # Clean parsed raw text of the paper PDF
 ├── summary.md         # High-level summary (Artifact 1)
-├── summary.pdf        # Print-ready styled PDF of the summary
+├── summary.html       # Interactively styled HTML summary with dark/light theme
 ├── deep_dive.md       # In-depth technical guide (Artifact 2)
-└── deep_dive.pdf      # Print-ready styled PDF of the deep-dive
+└── deep_dive.html     # Interactively styled HTML deep-dive with dark/light theme and live Mermaid rendering
 ```
 
-The PDF files are rendered using HTML-to-PDF converters with custom styling, standard margins, and typography.
+The HTML files are rendered using a responsive CSS design system with standard typography, custom code block formatting, and live Mermaid.js diagram drawing.

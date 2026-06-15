@@ -47,7 +47,10 @@ def markdown_to_html_rich(md_text: str) -> str:
         # Code block handling
         if line_strip.startswith("```"):
             if in_code_block:
-                html_lines.append("</code></pre>")
+                if code_block_lang == "mermaid":
+                    html_lines.append("</pre>")
+                else:
+                    html_lines.append("</code></pre>")
                 in_code_block = False
             else:
                 html_lines.extend(close_structures())
@@ -129,7 +132,10 @@ def markdown_to_html_rich(md_text: str) -> str:
             
     html_lines.extend(close_structures())
     if in_code_block:
-        html_lines.append("</code></pre>")
+        if code_block_lang == "mermaid":
+            html_lines.append("</pre>")
+        else:
+            html_lines.append("</code></pre>")
         
     return "\n".join(html_lines)
 

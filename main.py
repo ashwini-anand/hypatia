@@ -4,7 +4,6 @@ import sys
 from dotenv import load_dotenv
 from state import ResearchState
 from workflow import run_research_workflow
-from tools.pdf_generator import convert_markdown_to_pdf
 from tools.html_generator import convert_markdown_to_html
 
 def print_banner():
@@ -62,8 +61,8 @@ async def main():
     print(f"[🤖] Model Selected: {model_override}")
 
     print("\nHow would you like to load a paper?")
-    print("1. Search arXiv using a query (e.g. 'Transformer reinforcement learning')")
-    print("2. Provide a direct URL to a paper PDF (e.g. 'https://arxiv.org/pdf/1706.03762.pdf')")
+    print("1. Search arXiv using a query (e.g. 'distributed database consistency' or 'CRISPR gene editing')")
+    print("2. Provide a direct URL to a paper PDF (e.g. 'https://arxiv.org/pdf/1901.01930')")
     
     choice = input("\nEnter choice (1 or 2): ").strip()
     
@@ -114,17 +113,6 @@ async def main():
             
         print(f"\n[+] Success! Summary saved to: {summary_path}")
         print(f"[+] Success! Deep Dive saved to: {deep_dive_path}")
-        
-        # Save output PDF files
-        print("[*] Generating styled PDF documents...")
-        summary_pdf_path = os.path.join(paper_dir, "summary.pdf")
-        deep_dive_pdf_path = os.path.join(paper_dir, "deep_dive.pdf")
-        
-        convert_markdown_to_pdf(final_state.summary_draft or "", summary_pdf_path)
-        convert_markdown_to_pdf(final_state.deep_dive_draft or "", deep_dive_pdf_path)
-        
-        print(f"[+] Success! Summary PDF saved to: {summary_pdf_path}")
-        print(f"[+] Success! Deep Dive PDF saved to: {deep_dive_pdf_path}")
         
         # Save output HTML files
         print("[*] Generating styled HTML documents...")

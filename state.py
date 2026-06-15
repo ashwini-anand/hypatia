@@ -22,8 +22,8 @@ class CandidatePapersList(pydantic.BaseModel):
 class PaperFacts(pydantic.BaseModel):
     novel_contributions: List[str] = pydantic.Field(description="The novel contributions of this paper compared to previous works.")
     key_findings: List[str] = pydantic.Field(description="The primary experimental results and key findings of the paper.")
-    baselines_compared: List[str] = pydantic.Field(description="The baseline models or methodologies the paper compared its results against.")
-    datasets_used: List[str] = pydantic.Field(description="The specific benchmarks, datasets, or experimental environments used.")
+    baselines_compared: List[str] = pydantic.Field(description="The control groups, reference standards, or comparative baselines the paper compared its results against.")
+    datasets_used: List[str] = pydantic.Field(description="The specific benchmarks, datasets, samples, or experimental environments used.")
     methodology_steps: List[str] = pydantic.Field(description="A step-by-step breakdown of the proposed algorithm, framework, or mathematical method.")
 
 class ConceptCard(pydantic.BaseModel):
