@@ -1,12 +1,15 @@
+import pydantic
 from google.antigravity import Agent, LocalAgentConfig
 from tools.search import search_arxiv
-from typing import Optional
+from typing import Optional, Type
 
-def get_scout_agent(model: Optional[str] = None) -> Agent:
+def get_scout_agent(model: Optional[str] = None, schema: Optional[Type[pydantic.BaseModel]] = None, app_data_dir: Optional[str] = None) -> Agent:
     """Configures and instantiates the Searcher (Scout) Agent.
     
     Args:
         model: Optional model override. If None, uses SDK default.
+        schema: Optional structured response schema class.
+        app_data_dir: Optional custom application data directory.
     """
     config_args = {
         "system_instructions": (
@@ -21,6 +24,10 @@ def get_scout_agent(model: Optional[str] = None) -> Agent:
     }
     if model:
         config_args["model"] = model
+    if schema:
+        config_args["response_schema"] = schema
+    if app_data_dir:
+        config_args["app_data_dir"] = app_data_dir
         
     config = LocalAgentConfig(**config_args)
     return Agent(config=config)

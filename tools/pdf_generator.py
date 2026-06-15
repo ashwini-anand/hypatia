@@ -10,9 +10,30 @@ def markdown_to_html(md_text: str) -> str:
     lines = md_text.split("\n")
     html_lines = []
     in_list = False
+    in_code_block = False
     
     for line in lines:
         line_strip = line.strip()
+        
+        # Check for code block markers
+        if line_strip.startswith("```"):
+            if in_code_block:
+                html_lines.append("</code></pre>")
+                in_code_block = False
+            else:
+                if in_list:
+                    html_lines.append("</ul>")
+                    in_list = False
+                html_lines.append("<pre><code>")
+                in_code_block = True
+            continue
+            
+        if in_code_block:
+            # Inside a code block, we escape HTML characters but do not apply other markdown parsing.
+            # Preserve the line exactly as is (including leading/trailing whitespace).
+            html_lines.append(html.escape(line))
+            continue
+            
         if not line_strip:
             if in_list:
                 html_lines.append("</ul>")
@@ -63,6 +84,8 @@ def markdown_to_html(md_text: str) -> str:
             
     if in_list:
         html_lines.append("</ul>")
+    if in_code_block:
+        html_lines.append("</code></pre>")
         
     body = "\n".join(html_lines)
     
@@ -84,6 +107,20 @@ def markdown_to_html(md_text: str) -> str:
         strong {{ color: #1a202c; }}
         p {{ margin-bottom: 12px; font-size: 12px; }}
         ul {{ margin-top: 4px; margin-bottom: 12px; padding-left: 20px; }}
+        pre {{
+            background-color: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 12px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }}
+        code {{
+            font-family: monospace;
+            font-size: 10px;
+            color: #2d3748;
+        }}
     </style>
     </head>
     <body>

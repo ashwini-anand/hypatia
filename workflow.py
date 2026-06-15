@@ -92,12 +92,15 @@ async def run_research_workflow(
         print("Continuing in 5 seconds...")
         await asyncio.sleep(5)
 
+    is_gemini = "gemma" not in model_name.lower()
+
     # --------------------------------------------------
     # Step 1: Scout / Searcher Phase
     # --------------------------------------------------
     if not state.paper_url:
         print(f"[*] Querying arXiv database for: '{state.user_query}'...")
-        scout_agent = get_scout_agent(model)
+        scout_schema = CandidatePapersList if is_gemini else None
+        scout_agent = get_scout_agent(model, schema=scout_schema, app_data_dir=os.path.abspath("output"))
         async with scout_agent:
             schema_str = json.dumps(CandidatePapersList.model_json_schema(), indent=2)
             scout_prompt = (
@@ -159,54 +162,50 @@ async def run_research_workflow(
     set_active_paper_text(extracted_text)
 
     # --------------------------------------------------
-    # Step 3: Detail Extraction (Analyst Agent)
+    # Step 3 & 4: Detail Extraction & Technical Glossary (Analyst & Concept Explainer Agents)
     # --------------------------------------------------
     text_slice = extracted_text[:40000] if lite else extracted_text
     
-    print("[*] Analyzing paper content and extracting core facts...")
-    print("    [DEBUG] Creating Analyst Agent instance...")
-    analyst_agent = get_analyst_agent(model)
-    print("    [DEBUG] Entering async with context manager...")
-    async with analyst_agent:
-        print("    [DEBUG] Constructing prompt and schema...")
-        schema_str = json.dumps(PaperFacts.model_json_schema(), indent=2)
+    print("[*] Analyzing paper content and extracting core facts & generating concept cards...")
+    analyst_schema = PaperFacts if is_gemini else None
+    explainer_schema = ConceptCardsList if is_gemini else None
+    
+    abs_paper_dir = os.path.abspath(paper_dir)
+    analyst_agent = get_analyst_agent(model, schema=analyst_schema, app_data_dir=abs_paper_dir)
+    explainer_agent = get_explainer_agent(model, schema=explainer_schema, app_data_dir=abs_paper_dir)
+    
+    async with analyst_agent, explainer_agent:
+        schema_str_analyst = json.dumps(PaperFacts.model_json_schema(), indent=2)
         analyst_prompt = (
             f"Analyze the following paper content and extract key scientific facts.\n"
-            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}\n\n"
+            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str_analyst}\n\n"
             f"Paper Content:\n{text_slice}"
         )
-        print("    [DEBUG] Calling analyst_agent.chat(analyst_prompt)...")
-        response = await analyst_agent.chat(analyst_prompt)
-        print("    [DEBUG] Chat call completed. Parsing structured output...")
         
-        facts = await parse_structured_output(response, PaperFacts, "Analyst Agent")
-        print("    [DEBUG] parse_structured_output completed successfully.")
+        schema_str_explainer = json.dumps(ConceptCardsList.model_json_schema(), indent=2)
+        explainer_prompt = (
+            f"Scan the paper text and explain 3 to 5 key complex terms or math constructs.\n"
+            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str_explainer}\n\n"
+            f"Paper Content:\n{text_slice}"
+        )
+        
+        # Run chat calls concurrently
+        analyst_task = analyst_agent.chat(analyst_prompt)
+        explainer_task = explainer_agent.chat(explainer_prompt)
+        
+        print("    [->] Running Analyst and Explainer agents concurrently...")
+        analyst_response, explainer_response = await asyncio.gather(analyst_task, explainer_task)
+        
+        # Parse outputs
+        facts = await parse_structured_output(analyst_response, PaperFacts, "Analyst Agent")
         state.extracted_facts = facts
+        
+        cards_list = await parse_structured_output(explainer_response, ConceptCardsList, "Explainer Agent")
+        state.concept_cards = cards_list.cards if cards_list.cards else []
         
         novel_count = len(facts.novel_contributions) if facts.novel_contributions else 0
         methodology_count = len(facts.methodology_steps) if facts.methodology_steps else 0
         print(f"[+] Extracted {novel_count} novel contributions and {methodology_count} methodology steps.")
-
-    if lite:
-        print("[*] Cooling down for 12 seconds to respect API rate limits...")
-        await asyncio.sleep(12)
-
-    # --------------------------------------------------
-    # Step 4: Technical Glossary (Concept Explainer Agent)
-    # --------------------------------------------------
-    print("[*] Generating beginner-friendly concept card explanations...")
-    explainer_agent = get_explainer_agent(model)
-    async with explainer_agent:
-        schema_str = json.dumps(ConceptCardsList.model_json_schema(), indent=2)
-        explainer_prompt = (
-            f"Scan the paper text and explain 3 to 5 key complex terms or math constructs.\n"
-            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}\n\n"
-            f"Paper Content:\n{text_slice}"
-        )
-        response = await explainer_agent.chat(explainer_prompt)
-        
-        cards_list = await parse_structured_output(response, ConceptCardsList, "Explainer Agent")
-        state.concept_cards = cards_list.cards if cards_list.cards else []
         print(f"[+] Generated {len(state.concept_cards)} concept explanation cards.")
 
     if lite:
@@ -220,9 +219,12 @@ async def run_research_workflow(
     print("✍️  Starting Drafting & Critique Revision Loop")
     print("--------------------------------------------------")
     
-    summarizer_agent = get_summarizer_agent(model)
-    deep_dive_agent = get_deep_dive_agent(model)
-    critic_agent = get_critic_agent(model)
+    abs_paper_dir = os.path.abspath(paper_dir)
+    summarizer_agent = get_summarizer_agent(model, app_data_dir=abs_paper_dir)
+    deep_dive_agent = get_deep_dive_agent(model, app_data_dir=abs_paper_dir)
+    
+    critic_schema = CritiqueResult if is_gemini else None
+    critic_agent = get_critic_agent(model, schema=critic_schema, app_data_dir=abs_paper_dir)
     
     feedback_context = "This is the initial draft. No feedback yet."
     max_iterations = 3
@@ -232,31 +234,35 @@ async def run_research_workflow(
             state.iteration_count += 1
             print(f"\n[*] Iteration {state.iteration_count}/{max_iterations}:")
             
-            # A. Draft Summary
-            print("    [->] Drafting high-level summary (Summarizer)...")
+            # A. Prepare Prompts (injecting text_slice for higher quality drafts)
             facts_json = state.extracted_facts.model_dump_json() if state.extracted_facts else "{}"
             sum_prompt = (
-                f"Write a clear summary of the paper. Use these extracted facts:\n{facts_json}\n\n"
-                f"Context and critic feedback: {feedback_context}"
+                f"Write a highly clear, easy-to-understand, and engaging summary of the research paper (Artifact 1).\n\n"
+                f"Use these extracted core facts to guide your writing:\n{facts_json}\n\n"
+                f"Here is the text of the paper to draw deep context and explanations from:\n{text_slice}\n\n"
+                f"Critic feedback to address (if any):\n{feedback_context}"
             )
-            sum_response = await summarizer_agent.chat(sum_prompt)
-            await log_agent_thoughts(sum_response, "Summarizer Agent", debug, model)
-            state.summary_draft = await sum_response.text()
             
-            if lite:
-                print("    [*] Cooling down for 12 seconds to respect API rate limits...")
-                await asyncio.sleep(12)
-            
-            # B. Draft Deep Dive
-            print("    [->] Drafting technical deep dive (Deep-Dive Writer)...")
             cards_str = "\n".join([f"- {c.concept}: {c.explanation} (Analogy: {c.analogy})" for c in state.concept_cards])
             dive_prompt = (
-                f"Write an educational deep-dive of the paper. Use these facts:\n{facts_json}\n\n"
+                f"Write an educational technical deep-dive explanation of the research paper (Artifact 2).\n\n"
                 f"Explain these prerequisite concepts inside your explanation:\n{cards_str}\n\n"
-                f"Context and critic feedback: {feedback_context}"
+                f"Use these extracted core facts to guide your technical analysis:\n{facts_json}\n\n"
+                f"Here is the text of the paper containing the actual formulas, details, and context:\n{text_slice}\n\n"
+                f"Critic feedback to address (if any):\n{feedback_context}"
             )
-            dive_response = await deep_dive_agent.chat(dive_prompt)
+            
+            # B. Run Drafting concurrently
+            print("    [->] Drafting high-level summary and technical deep dive concurrently...")
+            sum_task = summarizer_agent.chat(sum_prompt)
+            dive_task = deep_dive_agent.chat(dive_prompt)
+            
+            sum_response, dive_response = await asyncio.gather(sum_task, dive_task)
+            
+            await log_agent_thoughts(sum_response, "Summarizer Agent", debug, model)
             await log_agent_thoughts(dive_response, "Deep-Dive Agent", debug, model)
+            
+            state.summary_draft = await sum_response.text()
             state.deep_dive_draft = await dive_response.text()
             
             if lite:

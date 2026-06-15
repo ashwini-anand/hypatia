@@ -1,5 +1,9 @@
 # Hypatia: Multi-Agent Scientific Literature Assistant
 
+> **Disclaimer**: This is a personal project. The views, code, and opinions expressed are my own and do not represent those of my current or past employers.
+
+---
+
 Hypatia is a Python-based multi-agent application designed to search, parse, summarize, and explain academic literature. Powered by the **Google Antigravity SDK** and Gemini models, Hypatia converts research PDFs or search queries into text summaries and technical deep dives.
 
 ---

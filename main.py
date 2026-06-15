@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from state import ResearchState
 from workflow import run_research_workflow
 from tools.pdf_generator import convert_markdown_to_pdf
+from tools.html_generator import convert_markdown_to_html
 
 def print_banner():
     print(r"""
@@ -124,6 +125,18 @@ async def main():
         
         print(f"[+] Success! Summary PDF saved to: {summary_pdf_path}")
         print(f"[+] Success! Deep Dive PDF saved to: {deep_dive_pdf_path}")
+        
+        # Save output HTML files
+        print("[*] Generating styled HTML documents...")
+        summary_html_path = os.path.join(paper_dir, "summary.html")
+        deep_dive_html_path = os.path.join(paper_dir, "deep_dive.html")
+        
+        paper_title = final_state.selected_paper.title if final_state.selected_paper else "Research Paper"
+        convert_markdown_to_html(final_state.summary_draft or "", summary_html_path, title=f"Summary: {paper_title}")
+        convert_markdown_to_html(final_state.deep_dive_draft or "", deep_dive_html_path, title=f"Deep Dive: {paper_title}")
+        
+        print(f"[+] Success! Summary HTML saved to: {summary_html_path}")
+        print(f"[+] Success! Deep Dive HTML saved to: {deep_dive_html_path}")
         print(f"[+] Check the '{paper_dir}' directory for files.")
         
     except Exception as e:
