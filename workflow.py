@@ -84,7 +84,7 @@ async def run_research_workflow(
 
     # Context Check for Gemma: Warn the user if they try to run a Gemma model in Full Context Mode
     if "gemma" in model_name.lower() and not lite:
-        print("\n⚠️  [Senior Engineer Warning]")
+        print("\n⚠️  [Warning]")
         print("Gemma models (like gemma-4-26b-a4b-it) have smaller context windows (typically 8K tokens)")
         print("compared to Gemini models (1M+ tokens). Running in Full Context Mode (passing the entire paper)")
         print("is highly likely to exceed Gemma's context window limit and cause it to hang or fail.")
