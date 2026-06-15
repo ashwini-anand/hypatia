@@ -133,11 +133,9 @@ To stream the internal reasoning steps (thoughts) of all agents in real-time to 
 When prompted by the CLI, you can load a paper using either a query or a direct URL:
 
 *   **Option 1: Search Query**
-    *   `distributed database consistency`
-    *   `CRISPR gene editing mechanisms`
+    *   `Explain the most influential paper in database in last one month duration.`
 *   **Option 2: Direct URL**
     *   `https://arxiv.org/pdf/1901.01930` (direct PDF link)
-    *   `https://arxiv.org/abs/1901.01930` (abstract landing page URL)
 
 ---
 
