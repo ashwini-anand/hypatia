@@ -17,27 +17,24 @@ graph TD
     User([User Request]) --> Engine[Workflow Orchestrator Engine]
     Engine -->|Route request| Route{Link or Query?}
     
-    Route -->|Query| Searcher[Searcher Agent]
-    Searcher -->|arXiv API| Searcher
-    Searcher -->|URL & Metadata| Engine
-    
+    Route -->|Query| Searcher[Scout Agent]
     Route -->|URL| Parser[PDF Parser Tool]
-    Engine -->|URL| Parser
-    Parser -->|PyMuPDF| Parser
-    Parser -->|Raw Text| Engine
     
-    Engine --> Analyst[Analyst Agent]
-    Analyst -->|JSON facts| Engine
+    Parser -->|Raw Text| Outliner[Outliner Agent]
+    Outliner -->|Hybrid Payload Outline| State[(State Ledger: state.json)]
     
-    Engine --> Summarizer[Summarizer Agent]
-    Engine --> DeepDive[Deep-Dive Agent]
-    Engine --> Explainer[Concept Explainer Agent]
+    Parser -->|Chunk & Embed| Chunks[Gemini Batch API]
+    Chunks -->|Parallel Fan-Out| Analyst[33x Analyst Agents]
+    Analyst -->|Local JSON Facts| Consolidator[Map-Reduce Consolidator]
+    Consolidator -->|Level-2 Facts| State
     
-    Summarizer -->|Summary Draft| Critic[Critic Agent]
-    DeepDive -->|Deep Dive Draft| Critic
-    Explainer -->|Glossaries| Critic
+    State -->|Compressed Snapshot| Summarizer[Summarizer Agent]
+    State -->|Compressed Snapshot| DeepDive[Deep-Dive Agent]
     
-    Critic -->|search_paper_text tool| PaperText[(Raw Paper Text)]
+    Summarizer -->|Draft| Critic[Critic Agent]
+    DeepDive -->|Draft| Critic
+    
+    Critic -->|retrieve_chunk & RRF| State
     Critic -->|Critique JSON| Engine
     
     Engine -->|Loop if rejected| Summarizer
@@ -50,13 +47,14 @@ graph TD
 1.  **Workflow Orchestrator Engine (Python Code)**: The central asynchronous coordinator (`workflow.py`). It manages execution states, runs independent agents in parallel streams using `asyncio.gather`, and implements the critique-and-revision feedback loops.
 2.  **PDF Parser Tool**: A python module (`tools/parser.py`) that downloads research PDFs and extracts raw page text cleanly using PyMuPDF.
 
-#### The 6 Specialized Worker Agents
-1.  **Searcher (Scout Agent)**: Uses the arXiv API to translate natural language queries into academic paper candidate links, abstracts, and metadata.
-2.  **Analyst (Analyst Agent)**: Parses raw paper text to extract core, atomic facts (novelty, comparative standards, key metrics, methodology steps) into structured JSON.
-3.  **Concept Explainer (Explainer Agent)**: Extracts complex scientific terms and creates plain-English definitions, analogies, and limitations for each.
-4.  **Summarizer (Summarizer Agent)**: Synthesizes paper details into a highly scannable, direct, and structured high-level summary (Artifact 1).
-5.  **Deep-Dive Writer (Deep-Dive Agent)**: Drafts a comprehensive technical document (Artifact 2) explaining equations, core mechanisms, experimental configurations, and implementation realities.
-6.  **Critic (Peer Reviewer)**: Fact-checks drafts against the original paper text using local RAG keyword searches. Rejects drafts containing factual inconsistencies or omissions, passing detailed correction feedback to the writing agents.
+#### The Specialized Worker Agents
+1.  **Searcher (Scout Agent)**: Uses the arXiv API to translate natural language queries into academic paper candidate links.
+2.  **Outliner (Explainer Agent)**: Runs immediately after parsing to extract a high-level Document Outline (Hybrid Payload).
+3.  **Analyst (Analyst Agent)**: Fanned out concurrently across all text chunks to extract atomic facts and preserve deep mathematical equations.
+4.  **Consolidator**: A Map-Reduce step that deduplicates the Analysts' findings into a highly dense Level 2 Snapshot.
+5.  **Summarizer (Summarizer Agent)**: Synthesizes the snapshot into an accessible, readable summary for general software engineers (Artifact 1).
+6.  **Deep-Dive Writer (Deep-Dive Agent)**: Drafts an uncompromising, production-grade architectural blueprint for senior systems engineers (Artifact 2).
+7.  **Critic (Peer Reviewer)**: Fact-checks drafts using a deterministic `retrieve_chunk` tool and hybrid RRF search. Rejects drafts containing factual inconsistencies or hallucinations.
 
 ---
 
@@ -96,16 +94,12 @@ GEMINI_API_KEY="your-gemini-api-key"
 
 Hypatia provides two execution modes depending on your API key type and rate-limit allocations:
 
-### Mode A: Full Context Mode (Default)
-By default, Hypatia runs in **Full Context Mode**. It processes the full text of the research paper in every agent prompt. This requires a standard Gemini API key with sufficient rate limits.
+### Running the Pipeline
+Because Hypatia utilizes a State-Externalizing Harness with RAPTOR chunking, the execution is inherently token-saving and heavily parallelized. 
+
+Simply run the main script to trigger the full multi-agent workflow:
 ```bash
 .venv/bin/python main.py
-```
-
-### Mode B: Lite Mode (Token-Saving)
-If you are running on a restricted **Gemini Free Tier** key, pass the `--lite` flag. This limits context length to 40,000 characters and switches the Critic agent to RAG mode to reduce input tokens. It also introduces a 12-second sleep cooldown between agent calls to respect rate limits.
-```bash
-.venv/bin/python main.py --lite
 ```
 
 ### Option C: Custom Model Selection

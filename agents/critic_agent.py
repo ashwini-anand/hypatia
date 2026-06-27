@@ -1,6 +1,6 @@
 import pydantic
 from google.antigravity import Agent, LocalAgentConfig
-from tools.fact_checker import search_paper_text
+from tools.fact_checker import search_paper_text, retrieve_chunk
 from typing import Optional, Type
 
 def get_critic_agent(model: Optional[str] = None, schema: Optional[Type[pydantic.BaseModel]] = None, app_data_dir: Optional[str] = None) -> Agent:
@@ -17,7 +17,8 @@ def get_critic_agent(model: Optional[str] = None, schema: Optional[Type[pydantic
             "Your task is to adversarially evaluate draft summaries and deep-dives against the original paper text "
             "to ensure absolute factual accuracy and completeness.\n\n"
             "Guidelines:\n"
-            "- You have access to the 'search_paper_text' tool. Use it sparingly (max 1-2 queries total). Combine keywords (e.g., 'thermal conductivity control group') to prevent rate limits.\n"
+            "- You have access to 'search_paper_text' (semantic search) and 'retrieve_chunk' (deterministic paging).\n"
+            "- If a semantic search misses, or if you need to read the surrounding context of a matching chunk (e.g., chunk_15), use 'retrieve_chunk' to page to it directly.\n"
             "- Evaluate for Hallucinations: Does the draft make claims not supported by the paper?\n"
             "- Evaluate for Omissions: Did the draft fail to mention critical limitations, experimental resource/apparatus constraints, or specific bounds of the methodology?\n"
             "- If there are any contradictions, errors, or unsupported claims, set 'approved' to False \n"
@@ -25,7 +26,7 @@ def get_critic_agent(model: Optional[str] = None, schema: Optional[Type[pydantic
             "- If the drafts are fully accurate, supported, and appropriately caveated, set 'approved' to True.\n"
             "- You must format your response to match the requested CritiqueResult JSON schema exactly."
         ),
-        "tools": [search_paper_text]
+        "tools": [search_paper_text, retrieve_chunk]
     }
     if model:
         config_args["model"] = model

@@ -4,3 +4,4 @@ pymupdf
 arxiv
 python-dotenv
 httpx
+google-genai

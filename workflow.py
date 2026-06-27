@@ -2,9 +2,9 @@ import asyncio
 import os
 import json
 import re
-from state import ResearchState, CandidatePaper, CandidatePapersList, PaperFacts, ConceptCardsList, CritiqueResult, ConceptCard
-from tools.parser import download_and_parse_pdf
-from tools.fact_checker import set_active_paper_text
+from state import ResearchState, CandidatePaper, CandidatePapersList, PaperFacts, ConceptCardsList, CritiqueResult, ConceptCard, HierarchicalMemoryMap, MemoryMapNode, DocumentOutline
+from tools.parser import download_and_parse_pdf, chunk_and_embed
+from tools.fact_checker import set_active_memory_map
 from agents.scout_agent import get_scout_agent
 from agents.analyst_agent import get_analyst_agent
 from agents.explainer_agent import get_explainer_agent
@@ -15,8 +15,7 @@ from typing import Optional, Type
 import pydantic
 
 async def log_agent_thoughts(response, agent_name: str, debug: bool, model: Optional[str] = None):
-    """Utility to print thoughts stream when debug is enabled.
-    """
+    """Utility to print thoughts stream when debug is enabled."""
     if not debug:
         return
         
@@ -28,24 +27,16 @@ async def log_agent_thoughts(response, agent_name: str, debug: bool, model: Opti
         print(f" (Error streaming thoughts: {e})", end="")
     print("\n")
 
-
 async def parse_structured_output(response, model_class: Type[pydantic.BaseModel], agent_name: str) -> pydantic.BaseModel:
-    """Safely extracts structured output. If the model does not support native schema restrictions
-    (e.g., Gemma), extracts JSON from raw text using regex.
-    """
+    """Safely extracts structured output. Fallback to regex text parsing."""
     try:
-        # 1. Attempt native SDK structured extraction
         structured_data = await response.structured_output()
         if structured_data is not None:
             return model_class(**structured_data)
     except Exception as e:
-        # Fallback to text parsing
         pass
 
-    # 2. Text Parsing Fallback
     raw_text = await response.text()
-    
-    # Locate JSON block inside markdown formatting if present
     json_match = re.search(r"```json\s*(.*?)\s*```", raw_text, re.DOTALL)
     json_str = json_match.group(1) if json_match else raw_text
     
@@ -62,35 +53,13 @@ async def run_research_workflow(
     lite: bool = False, 
     model: Optional[str] = None
 ) -> ResearchState:
-    """Orchestrates the research and drafting pipeline using specialized agents.
-    
-    Args:
-        state: The current ResearchState.
-        debug: If True, prints additional logs and streams agent thoughts.
-        lite: If True, runs in token-saving mode (truncates paper text and uses RAG for the Critic).
-              If False (Default), runs in Full Context Mode (passes full paper text for analysis).
-        model: Optional model override string (e.g. 'gemini-3.5-pro').
-    """
+    """Orchestrates the research and drafting pipeline using specialized agents."""
     model_name = model or "gemini-3.5-flash"
     
     print("\n==================================================")
     print("🚀 Starting Hypatia Scientific Research Workflow")
-    if lite:
-        print("[⚡] Mode: Lite (Low Token / Rate-Limit Safe)")
-    else:
-        print("[📄] Mode: Full Context (Full Document Analysis)")
     print(f"[🤖] Model: {model_name}")
     print("==================================================")
-
-    # Context Check for Gemma: Warn the user if they try to run a Gemma model in Full Context Mode
-    if "gemma" in model_name.lower() and not lite:
-        print("\n⚠️  [Warning]")
-        print("Gemma models (like gemma-4-26b-a4b-it) have smaller context windows (typically 8K tokens)")
-        print("compared to Gemini models (1M+ tokens). Running in Full Context Mode (passing the entire paper)")
-        print("is highly likely to exceed Gemma's context window limit and cause it to hang or fail.")
-        print("-> It is strongly recommended to run Gemma models in '--lite' mode.")
-        print("Continuing in 5 seconds...")
-        await asyncio.sleep(5)
 
     is_gemini = "gemma" not in model_name.lower()
 
@@ -111,27 +80,21 @@ async def run_research_workflow(
                 f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}"
             )
             response = await scout_agent.chat(scout_prompt)
-            
             candidates_data = await parse_structured_output(response, CandidatePapersList, "Scout Agent")
             
             if not candidates_data or not candidates_data.candidates:
                 raise ValueError(f"No research papers found for the query: '{state.user_query}'")
             
             state.candidates = candidates_data.candidates
-            # Select the top candidate automatically
             state.selected_paper = state.candidates[0]
             state.paper_url = state.selected_paper.url
             print(f"[+] Found paper candidate: '{state.selected_paper.title}'")
             print(f"[+] Download link: {state.paper_url}")
-            
-        if lite:
-            print("[*] Cooling down for 12 seconds to respect API rate limits...")
-            await asyncio.sleep(12)
     else:
         print(f"[*] Direct paper URL provided: {state.paper_url}")
 
     # --------------------------------------------------
-    # Step 2: Download and Parse PDF Text
+    # Step 2: Download, Parse PDF, and Build Memory Map
     # --------------------------------------------------
     print("[*] Retrieving and extracting text from PDF...")
     if "arxiv.org/abs/" in state.paper_url:
@@ -146,11 +109,7 @@ async def run_research_workflow(
             filename = "paper"
             
         state.selected_paper = CandidatePaper(
-            title=filename,
-            url=state.paper_url,
-            authors=[],
-            published="",
-            abstract=""
+            title=filename, url=state.paper_url, authors=[], published="", abstract=""
         )
 
     folder_name = state.selected_paper.get_folder_name()
@@ -160,16 +119,43 @@ async def run_research_workflow(
     raw_text_path = os.path.join(paper_dir, "raw_text.txt")
     extracted_text = download_and_parse_pdf(state.paper_url, save_text_path=raw_text_path)
     state.extracted_text = extracted_text
+
+    print("[*] Extracting Document Outline (Hybrid Payload)...")
+    abs_paper_dir = os.path.abspath(paper_dir)
+    outliner_agent = get_explainer_agent(model, schema=DocumentOutline if is_gemini else None, app_data_dir=abs_paper_dir)
+    async with outliner_agent:
+        schema_str_outline = json.dumps(DocumentOutline.model_json_schema(), indent=2)
+        outline_prompt = (
+            f"Scan the following research paper and extract its high-level Document Outline (Table of Contents).\n"
+            f"For each section, provide a brief 1-2 sentence summary of its contents.\n"
+            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str_outline}\n\n"
+            f"Paper Content:\n{extracted_text[:40000]}"
+        )
+        outline_response = await outliner_agent.chat(outline_prompt)
+        state.document_outline = await parse_structured_output(outline_response, DocumentOutline, "Outliner Agent")
+        if state.document_outline and state.document_outline.outline:
+            print(f"    [+] Extracted outline with {len(state.document_outline.outline)} sections.")
+
+    print("[*] Generating RAPTOR Chunks & Batch Embeddings...")
+    chunks_data = chunk_and_embed(extracted_text)
     
-    # Store text in global tool state for Critic fact-checking fallback
-    set_active_paper_text(extracted_text)
+    for i, c in enumerate(chunks_data):
+        node_id = f"chunk_{i}"
+        state.memory_map.nodes[node_id] = MemoryMapNode(
+            id=node_id,
+            level=0,
+            raw_text=c["content"],
+            embedding=c["embedding"]
+        )
+        
+    # Store memory map globally for the Critic's paging tool
+    set_active_memory_map(state.memory_map)
+    await state.memory_map.save_checkpoint_async(os.path.join(paper_dir, "state.json"))
 
     # --------------------------------------------------
-    # Step 3 & 4: Detail Extraction & Technical Glossary (Analyst & Concept Explainer Agents)
+    # Step 3 & 4: Parallel Extraction & Consolidation
     # --------------------------------------------------
-    text_slice = extracted_text[:40000] if lite else extracted_text
-    
-    print("[*] Analyzing paper content and extracting core facts & generating concept cards...")
+    print("[*] Running parallel Analyst ingestion and generating concept cards...")
     analyst_schema = PaperFacts if is_gemini else None
     explainer_schema = ConceptCardsList if is_gemini else None
     
@@ -179,50 +165,83 @@ async def run_research_workflow(
     
     async with analyst_agent, explainer_agent:
         schema_str_analyst = json.dumps(PaperFacts.model_json_schema(), indent=2)
-        analyst_prompt = (
-            f"Analyze the following paper content and extract key scientific facts.\n"
-            f"You MUST format your final response as a JSON object matching this schema:\n{schema_str_analyst}\n\n"
-            f"Paper Content:\n{text_slice}"
-        )
+        analyst_tasks = []
         
+        sem = asyncio.Semaphore(2)
+        
+        async def run_analyst(node_id: str, raw_text: str, stagger_delay: float):
+            await asyncio.sleep(stagger_delay)
+            async with sem:
+                analyst_prompt = (
+                    f"Analyze the following paper chunk and extract key scientific facts.\n"
+                    f"CRITICAL: Do not overly simplify mathematical formulas or system limitations. If you see formal algebra, lattice-theoretic properties, complexity constraints, or compiler toolchain names, extract them precisely into the appropriate schema fields.\n"
+                    f"You MUST format your final response as a JSON object matching this schema:\n{schema_str_analyst}\n\n"
+                    f"Paper Chunk ({node_id}):\n{raw_text}"
+                )
+                return await analyst_agent.chat(analyst_prompt)
+        
+        # Fan-out parallel parsing tasks for each chunk
+        current_delay = 0.0
+        for node_id, node in state.memory_map.nodes.items():
+            if node.level == 0:
+                analyst_tasks.append(run_analyst(node_id, node.raw_text, current_delay))
+                current_delay += 2.0  # Stagger each request by 2 seconds to avoid 503 spikes
+                
         schema_str_explainer = json.dumps(ConceptCardsList.model_json_schema(), indent=2)
         explainer_prompt = (
             f"Scan the paper text and explain 3 to 5 key complex terms or math constructs.\n"
             f"You MUST format your final response as a JSON object matching this schema:\n{schema_str_explainer}\n\n"
-            f"Paper Content:\n{text_slice}"
+            f"Paper Content:\n{extracted_text[:40000]}"
         )
-        
-        # Run chat calls concurrently
-        analyst_task = analyst_agent.chat(analyst_prompt)
         explainer_task = explainer_agent.chat(explainer_prompt)
         
-        print("    [->] Running Analyst and Explainer agents concurrently...")
-        analyst_response, explainer_response = await asyncio.gather(analyst_task, explainer_task)
+        print(f"    [->] Queued {len(analyst_tasks)} Analyst agents (staggered to avoid API spikes)...")
+        results = await asyncio.gather(*analyst_tasks, explainer_task)
         
-        # Parse outputs
-        facts = await parse_structured_output(analyst_response, PaperFacts, "Analyst Agent")
-        state.extracted_facts = facts
+        analyst_responses = results[:-1]
+        explainer_response = results[-1]
+        
+        print("    [->] Running Map-Reduce Consolidator...")
+        all_facts_json = []
+        for i, resp in enumerate(analyst_responses):
+            facts_local = await parse_structured_output(resp, PaperFacts, f"Analyst Chunk {i}")
+            all_facts_json.append(facts_local.model_dump_json())
+            
+        consolidator_prompt = (
+            f"You are the Consolidator. Merge and deduplicate the following {len(all_facts_json)} local fact extractions into a single, highly dense summary.\n"
+            f"Discard duplicate boilerplate. CRITICAL: You must preserve ALL exact mathematical equations, algebraic proofs, and edge-case limitations. Do not delete them during deduplication.\n"
+            f"Format as JSON matching the PaperFacts schema:\n{schema_str_analyst}\n\n"
+            + "\n".join(all_facts_json)
+        )
+        
+        consolidator_response = await analyst_agent.chat(consolidator_prompt)
+        consolidated_facts = await parse_structured_output(consolidator_response, PaperFacts, "Consolidator")
+        state.extracted_facts = consolidated_facts
+        
+        # Save Level 2 Root node
+        state.memory_map.nodes["root_facts"] = MemoryMapNode(
+            id="root_facts",
+            level=2,
+            raw_text=consolidated_facts.model_dump_json()
+        )
         
         cards_list = await parse_structured_output(explainer_response, ConceptCardsList, "Explainer Agent")
         state.concept_cards = cards_list.cards if cards_list.cards else []
         
-        novel_count = len(facts.novel_contributions) if facts.novel_contributions else 0
-        methodology_count = len(facts.methodology_steps) if facts.methodology_steps else 0
-        print(f"[+] Extracted {novel_count} novel contributions and {methodology_count} methodology steps.")
+        novel_count = len(consolidated_facts.novel_contributions) if consolidated_facts.novel_contributions else 0
+        methodology_count = len(consolidated_facts.methodology_steps) if consolidated_facts.methodology_steps else 0
+        print(f"[+] Consolidated {novel_count} novel contributions and {methodology_count} methodology steps.")
         print(f"[+] Generated {len(state.concept_cards)} concept explanation cards.")
 
-    if lite:
-        print("[*] Cooling down for 12 seconds to respect API rate limits...")
-        await asyncio.sleep(12)
+    await state.memory_map.save_checkpoint_async(os.path.join(paper_dir, "state.json"))
 
     # --------------------------------------------------
-    # Step 5: Draft & Critique Loop
+    # Step 5: Draft & Critique Loop (Stateless Execution)
     # --------------------------------------------------
     print("\n--------------------------------------------------")
     print("✍️  Starting Drafting & Critique Revision Loop")
     print("--------------------------------------------------")
     
-    abs_paper_dir = os.path.abspath(paper_dir)
     summarizer_agent = get_summarizer_agent(model, app_data_dir=abs_paper_dir)
     deep_dive_agent = get_deep_dive_agent(model, app_data_dir=abs_paper_dir)
     
@@ -237,25 +256,26 @@ async def run_research_workflow(
             state.iteration_count += 1
             print(f"\n[*] Iteration {state.iteration_count}/{max_iterations}:")
             
-            # A. Prepare Prompts (injecting text_slice for higher quality drafts)
+            # Agents receive ONLY compressed snapshots, not raw paper text
             facts_json = state.extracted_facts.model_dump_json() if state.extracted_facts else "{}"
+            outline_json = state.document_outline.model_dump_json() if state.document_outline else "{}"
+            
             sum_prompt = (
-                f"Write a highly clear, easy-to-understand, and engaging summary of the research paper (Artifact 1).\n\n"
-                f"Use these extracted core facts to guide your writing:\n{facts_json}\n\n"
-                f"Here is the text of the paper to draw deep context and explanations from:\n{text_slice}\n\n"
+                f"Write a highly clear, easy-to-understand, and engaging summary of the research paper (Artifact 1).\n"
+                f"Use this Document Outline as your structural roadmap:\n{outline_json}\n\n"
+                f"Use these deduplicated core facts (Level 2 Snapshot) to guide your writing:\n{facts_json}\n\n"
                 f"Critic feedback to address (if any):\n{feedback_context}"
             )
             
             cards_str = "\n".join([f"- {c.concept}: {c.explanation} (Analogy: {c.analogy})" for c in state.concept_cards])
             dive_prompt = (
-                f"Write an educational technical deep-dive explanation of the research paper (Artifact 2).\n\n"
+                f"Write an advanced, production-grade architectural deep-dive of the research paper (Artifact 2).\n"
+                f"Use this Document Outline as your structural roadmap:\n{outline_json}\n\n"
                 f"Explain these prerequisite concepts inside your explanation:\n{cards_str}\n\n"
                 f"Use these extracted core facts to guide your technical analysis:\n{facts_json}\n\n"
-                f"Here is the text of the paper containing the actual formulas, details, and context:\n{text_slice}\n\n"
                 f"Critic feedback to address (if any):\n{feedback_context}"
             )
             
-            # B. Run Drafting concurrently
             print("    [->] Drafting high-level summary and technical deep dive concurrently...")
             sum_task = summarizer_agent.chat(sum_prompt)
             dive_task = deep_dive_agent.chat(dive_prompt)
@@ -268,31 +288,17 @@ async def run_research_workflow(
             state.summary_draft = await sum_response.text()
             state.deep_dive_draft = await dive_response.text()
             
-            if lite:
-                print("    [*] Cooling down for 12 seconds to respect API rate limits...")
-                await asyncio.sleep(12)
-            
-            # C. Critique
             print("    [->] Double-checking drafts for accuracy (Critic)...")
             schema_str = json.dumps(CritiqueResult.model_json_schema(), indent=2)
             schema_inst = f"You MUST format your final response as a JSON object matching this schema:\n{schema_str}\n\n"
-            if lite:
-                critic_prompt = (
-                    f"Review the draft summary and deep-dive for accuracy. Compare them directly with the paper text below (truncated to fit context).\n"
-                    f"Use your 'search_paper_text' tool only if you need to look up facts not found in the text below.\n\n"
-                    f"{schema_inst}"
-                    f"--- ORIGINAL PAPER TEXT (TRUNCATED) ---\n{text_slice}\n\n"
-                    f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
-                    f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
-                )
-            else:
-                critic_prompt = (
-                    f"Review the draft summary and deep-dive for accuracy. Compare it directly with the original paper text below.\n\n"
-                    f"{schema_inst}"
-                    f"--- ORIGINAL PAPER TEXT ---\n{extracted_text}\n\n"
-                    f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
-                    f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
-                )
+            
+            critic_prompt = (
+                f"Review the draft summary and deep-dive for accuracy.\n"
+                f"You DO NOT have the full paper in your context window. You MUST use your 'search_paper_text' tool to page in specific paragraphs to verify claims.\n\n"
+                f"{schema_inst}"
+                f"--- DRAFT SUMMARY ---\n{state.summary_draft}\n\n"
+                f"--- DRAFT DEEP DIVE ---\n{state.deep_dive_draft}"
+            )
                 
             critic_response = await critic_agent.chat(critic_prompt)
             
@@ -316,10 +322,8 @@ async def run_research_workflow(
                     f"Hallucinations detected: {hallucinations}\n"
                     f"Feedback: {corrections}"
                 )
-                
-                if lite:
-                    print("    [*] Cooling down for 12 seconds to respect API rate limits...")
-                    await asyncio.sleep(12)
+        
+        await state.memory_map.save_checkpoint_async(os.path.join(paper_dir, "state.json"))
 
     print("\n==================================================")
     print("🎉 Hypatia Workflow Completed Successfully!")
