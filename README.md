@@ -47,14 +47,18 @@ graph TD
 1.  **Workflow Orchestrator Engine (Python Code)**: The central asynchronous coordinator (`workflow.py`). It manages execution states, runs independent agents in parallel streams using `asyncio.gather`, and implements the critique-and-revision feedback loops.
 2.  **PDF Parser Tool**: A python module (`tools/parser.py`) that downloads research PDFs and extracts raw page text cleanly using PyMuPDF.
 
-#### The Specialized Worker Agents
+#### The 5 Specialized Worker Agents
 1.  **Searcher (Scout Agent)**: Uses the arXiv API to translate natural language queries into academic paper candidate links.
-2.  **Outliner (Explainer Agent)**: Runs immediately after parsing to extract a high-level Document Outline (Hybrid Payload).
-3.  **Analyst (Analyst Agent)**: Fanned out concurrently across all text chunks to extract atomic facts and preserve deep mathematical equations.
-4.  **Consolidator**: A Map-Reduce step that deduplicates the Analysts' findings into a highly dense Level 2 Snapshot.
-5.  **Summarizer (Summarizer Agent)**: Synthesizes the snapshot into an accessible, readable summary for general software engineers (Artifact 1).
-6.  **Deep-Dive Writer (Deep-Dive Agent)**: Drafts an uncompromising, production-grade architectural blueprint for senior systems engineers (Artifact 2).
-7.  **Critic (Peer Reviewer)**: Fact-checks drafts using a deterministic `retrieve_chunk` tool and hybrid RRF search. Rejects drafts containing factual inconsistencies or hallucinations.
+2.  **Analyst (Analyst Agent)**: Fanned out concurrently across all text chunks to extract atomic facts and preserve deep mathematical equations.
+3.  **Concept Explainer (Explainer Agent)**: Extracts complex scientific terms and creates plain-English definitions and analogies.
+4.  **Summarizer (Summarizer Agent)**: Synthesizes the snapshot into an accessible, readable summary for general software engineers (Artifact 1).
+5.  **Deep-Dive Writer (Deep-Dive Agent)**: Drafts an uncompromising, production-grade architectural blueprint for senior systems engineers (Artifact 2).
+6.  **Critic (Peer Reviewer)**: Fact-checks drafts using a deterministic `retrieve_chunk` tool and hybrid RRF search. Rejects drafts containing factual inconsistencies or hallucinations.
+
+#### The Map-Reduce Processing Steps (workflow.py)
+In addition to the standalone agents, the workflow engine runs several automated functional steps that reuse the underlying agents:
+*   **The Outliner**: Reuses the Explainer Agent immediately after parsing to extract a high-level Document Outline (Hybrid Payload).
+*   **The Consolidator**: A Map-Reduce loop that reuses the Analyst Agent to deduplicate the chunks' local findings into a highly dense Level 2 Snapshot.
 
 ---
 
